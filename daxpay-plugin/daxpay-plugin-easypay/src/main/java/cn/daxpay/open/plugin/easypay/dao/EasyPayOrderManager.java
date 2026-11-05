@@ -25,6 +25,11 @@ public class EasyPayOrderManager extends BaseManager<EasyPayOrderMapper, EasyPay
         return findByField(EasyPayOrder::getOutTradeNo, outTradeNo);
     }
 
+    /// 收银台重试按应用和商户订单号定位，避免复用其他应用的支付参数。
+    public Optional<EasyPayOrder> findByAppIdAndOutTradeNo(String appId, String outTradeNo) {
+        return lambdaQuery().eq(EasyPayOrder::getAppId, appId).eq(EasyPayOrder::getOutTradeNo, outTradeNo).oneOpt();
+    }
+
     /// 按平台业务单号查询
     public Optional<EasyPayOrder> findByTradeNo(String tradeNo) {
         return findByField(EasyPayOrder::getTradeNo, tradeNo);

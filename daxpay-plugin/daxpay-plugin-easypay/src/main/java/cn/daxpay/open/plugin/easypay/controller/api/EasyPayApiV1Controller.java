@@ -10,7 +10,6 @@ import cn.daxpay.open.plugin.easypay.result.api.EasyPayOrderStatusResult;
 import cn.daxpay.open.plugin.easypay.result.api.EasyPaySubmitInfoResult;
 import cn.daxpay.open.plugin.easypay.result.api.v1.EasyPayCreateV1Result;
 import cn.daxpay.open.plugin.easypay.result.api.v1.EasyPayOrderV1Result;
-import cn.daxpay.open.plugin.easypay.service.api.EasyPayAssistService;
 import cn.daxpay.open.plugin.easypay.service.api.v1.EasyPayPayV1Service;
 import cn.daxpay.open.plugin.easypay.service.api.v1.EasyPayQueryV1Service;
 import io.swagger.v3.oas.annotations.Operation;
@@ -33,7 +32,6 @@ public class EasyPayApiV1Controller {
 
     private final EasyPayPayV1Service easyPayPayV1Service;
     private final EasyPayQueryV1Service easyPayQueryV1Service;
-    private final EasyPayAssistService easyPayAssistService;
 
     @Operation(summary = "页面跳转支付 submit.php")
     @RequestMapping(value = "/submit.php", method = {RequestMethod.GET, RequestMethod.POST})
@@ -55,13 +53,30 @@ public class EasyPayApiV1Controller {
 
     @Operation(summary = "查询订单状态(内部)")
     @GetMapping("/order/status")
-    public Result<EasyPayOrderStatusResult> queryOrderStatus(@NotNull Long orderId) {
-        return Res.ok(easyPayAssistService.queryOrderStatus(orderId));
+    public Result<EasyPayOrderStatusResult> queryOrderStatus(@NotNull Long orderId,
+            @RequestHeader("X-EasyPay-Token") String token) {
+        var info = easyPayPayV1Service.cashierInfo(orderId, token);
+        return Res.ok(new EasyPayOrderStatusResult().setStatus(info.getStatus()).setReturnUrl(info.getReturnUrl()));
     }
 
     @Operation(summary = "收银台订单信息(内部)")
     @GetMapping("/order/info")
-    public Result<EasyPaySubmitInfoResult> orderInfo(@NotNull Long id) {
-        return Res.ok(easyPayAssistService.findSubmitInfo(id));
+    public Result<EasyPaySubmitInfoResult> orderInfo(@NotNull Long id,
+            @RequestHeader("X-EasyPay-Token") String token) {
+        return Res.ok(easyPayPayV1Service.cashierInfo(id, token));
+    }
+
+    @Operation(summary = "凭单据访问凭证加载收银台")
+    @GetMapping({"/cashier/info", "/cashier/status"})
+    public Result<EasyPaySubmitInfoResult> cashierInfo(@NotNull Long id,
+            @RequestHeader("X-EasyPay-Token") String token) {
+        return Res.ok(easyPayPayV1Service.cashierInfo(id, token));
+    }
+
+    @Operation(summary = "收银台发起微信 Native 支付")
+    @PostMapping("/cashier/pay")
+    public Result<EasyPaySubmitInfoResult> cashierPay(@NotNull Long id,
+            @RequestHeader("X-EasyPay-Token") String token) {
+        return Res.ok(easyPayPayV1Service.cashierPay(id, token));
     }
 }

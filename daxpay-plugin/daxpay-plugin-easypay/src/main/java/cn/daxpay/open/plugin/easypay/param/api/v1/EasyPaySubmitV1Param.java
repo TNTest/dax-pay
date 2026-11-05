@@ -41,6 +41,10 @@ public class EasyPaySubmitV1Param {
     @Schema(description = "金额（元）")
     private String money;
 
+    /// 设备类型（参与易支付 V1 MD5 签名）
+    @Schema(description = "设备类型 pc/mobile")
+    private String device;
+
     /// 客户端 IP
     @Schema(description = "客户端IP")
     private String clientip;

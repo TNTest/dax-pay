@@ -14,6 +14,7 @@ import cn.daxpay.open.plugin.easypay.dao.EasyPayOrderManager;
 import cn.daxpay.open.plugin.easypay.entity.EasyPayCredential;
 import cn.daxpay.open.plugin.easypay.entity.EasyPayOrder;
 import cn.daxpay.open.plugin.easypay.enums.EasyPayMethodEnum;
+import cn.daxpay.open.plugin.easypay.enums.EasyPayApiVersionEnum;
 import cn.daxpay.open.plugin.easypay.result.api.EasyPayOrderStatusResult;
 import cn.daxpay.open.plugin.easypay.result.api.EasyPaySubmitInfoResult;
 import cn.daxpay.open.plugin.easypay.util.EasyPayUtil;
@@ -134,6 +135,7 @@ public class EasyPayAssistService {
     public EasyPayOrderStatusResult queryOrderStatus(Long id) {
         var order = easyPayOrderManager.findByIdNotTenant(id)
                 .orElseThrow(() -> new DataNotExistException("error.plugin.easypay.orderNotFound"));
+        assertLegacyCashierVersion(order);
         return new EasyPayOrderStatusResult()
                 .setStatus(order.getStatus())
                 .setReturnUrl(order.getReturnUrl())
@@ -145,6 +147,7 @@ public class EasyPayAssistService {
     public EasyPaySubmitInfoResult findSubmitInfo(Long id) {
         var order = easyPayOrderManager.findByIdNotTenant(id)
                 .orElseThrow(() -> new DataNotExistException("error.plugin.easypay.orderNotFound"));
+        assertLegacyCashierVersion(order);
         return new EasyPaySubmitInfoResult()
                 .setId(order.getId())
                 .setType(order.getType())
@@ -156,6 +159,13 @@ public class EasyPayAssistService {
                 .setPcCallType(order.getPcCallType())
                 .setStatus(order.getStatus())
                 .setReturnUrl(order.getReturnUrl());
+    }
+
+    /// 旧 V2 内部接口不得绕过 V1 收银台访问凭证读取或操作 V1 订单。
+    public void assertLegacyCashierVersion(EasyPayOrder order) {
+        if (Objects.equals(order.getApiVersion(), EasyPayApiVersionEnum.V1.getCode())) {
+            throw new ValidationFailedException("error.plugin.easypay.signInvalid");
+        }
     }
 
     /// 根据协议单定位资金交易

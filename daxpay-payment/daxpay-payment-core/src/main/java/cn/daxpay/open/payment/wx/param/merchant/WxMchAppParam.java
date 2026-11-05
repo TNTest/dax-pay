@@ -37,7 +37,6 @@ public class WxMchAppParam {
     private String wxAppId;
 
     @JsonDeserialize(using = CredentialKeepWhenBlankDeserializer.class)
-    @NotBlank(message = "{validation.field.appSecret.notBlank}", groups = ValidationGroup.add.class)
-    @Schema(description = "应用密钥，编辑时为空表示不更新")
+    @Schema(description = "应用密钥，Native扫码可不填；OAuth认证需配置，编辑时为空表示不更新")
     private String appSecret;
 }

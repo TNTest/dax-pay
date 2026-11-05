@@ -8,6 +8,12 @@ import tools.jackson.core.type.TypeReference;
 import lombok.experimental.UtilityClass;
 import lombok.extern.slf4j.Slf4j;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.TreeMap;
@@ -64,6 +70,26 @@ public class EasyPayUtil {
         map.remove("sign_type");
         map.entrySet().removeIf(e -> Objects.isNull(e.getValue()) || e.getValue().isEmpty());
         return map;
+    }
+
+    /// 每单收银台访问凭证：仅由服务端生成，浏览器不持有商户 MD5 密钥。
+    public String cashierToken(Long orderId, Integer pid, String outTradeNo, String md5Key) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(md5Key.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+            String value = "epay-cashier-v1:" + orderId + ":" + pid + ":" + outTradeNo;
+            return HexFormat.of().formatHex(mac.doFinal(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("Unable to sign cashier access token", e);
+        }
+    }
+
+    public boolean verifyCashierToken(Long orderId, Integer pid, String outTradeNo, String md5Key, String token) {
+        if (StrUtil.isBlank(md5Key) || token == null || !token.matches("[a-f0-9]{64}")) {
+            return false;
+        }
+        String expected = cashierToken(orderId, pid, outTradeNo, md5Key);
+        return MessageDigest.isEqual(expected.getBytes(StandardCharsets.US_ASCII), token.getBytes(StandardCharsets.US_ASCII));
     }
 
     /// 元转分

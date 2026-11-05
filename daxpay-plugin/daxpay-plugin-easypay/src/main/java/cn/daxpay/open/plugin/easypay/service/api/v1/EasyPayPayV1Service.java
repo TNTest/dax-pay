@@ -1,10 +1,16 @@
 package cn.daxpay.open.plugin.easypay.service.api.v1;
 
+import cn.daxpay.open.payment.common.context.MerchantContextLoader;
+import cn.daxpay.open.payment.common.lock.TradeLockKeys;
 import cn.daxpay.open.payment.trade.runtime.bo.NormalPayExecutionResult;
 import cn.daxpay.open.payment.trade.runtime.service.pay.normal.NormalPayService;
 import cn.daxpay.open.payment.unipay.param.trade.pay.NormalPayParam;
 import cn.daxpay.open.payment.unipay.result.trade.pay.NormalPayResult;
 import cn.daxpay.open.platform.common.spring.util.WebServletUtil;
+import cn.daxpay.open.platform.common.redis.lock.LockExecutor;
+import cn.daxpay.open.platform.core.exception.DataNotExistException;
+import cn.daxpay.open.platform.core.exception.ValidationFailedException;
+import cn.daxpay.open.plugin.easypay.result.api.EasyPaySubmitInfoResult;
 import cn.daxpay.open.platform.core.enums.unipay.PayBodyTypeEnum;
 import cn.daxpay.open.platform.system.service.config.infra.PlatformUrlConfigService;
 import cn.daxpay.open.plugin.easypay.dao.EasyPayOrderManager;
@@ -24,6 +30,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.Objects;
 
 /// # 易支付 V1 支付
 ///
@@ -37,15 +44,21 @@ public class EasyPayPayV1Service {
     private final EasyPayOrderManager easyPayOrderManager;
     private final NormalPayService normalPayService;
     private final PlatformUrlConfigService platformUrlConfigService;
+    private final LockExecutor lockExecutor;
+    private final MerchantContextLoader merchantContextLoader;
 
     /// 页面跳转支付 → 收银台 URL
     public String submit(EasyPaySubmitV1Param param) {
         var credential = easyPayCredentialService.getAndCheck(param.getPid());
         easyPayAssistService.checkSignV1(param, credential, param.getSign());
         String gateway = platformUrlConfigService.getUrlConfig().getPaymentGatewayBaseUrl();
-        var existing = easyPayOrderManager.findByOutTradeNo(param.getOutTradeNo());
+        var existing = easyPayOrderManager.findByAppIdAndOutTradeNo(credential.getAppId(), param.getOutTradeNo());
         if (existing.isPresent()) {
-            return gateway + "/easypay/v1/pay/" + existing.get().getId();
+            var order = existing.get();
+            if (!Objects.equals(order.getPid(), credential.getPid())) {
+                throw new ValidationFailedException("error.plugin.easypay.orderNotFound");
+            }
+            return cashierUrl(gateway, order, credential.getMd5Key());
         }
         var order = newOrder(param.getOutTradeNo(), param.getType(), param.getName(), param.getMoney(),
                 param.getNotifyUrl(), param.getReturnUrl(), param.getParam(), param.getClientip(),
@@ -53,7 +66,82 @@ public class EasyPayPayV1Service {
         order.setPayUrl(gateway + "/easypay/v1/pay/" + order.getId())
                 .setPcCallType(PayBodyTypeEnum.QR_CODE.getCode());
         easyPayOrderManager.save(order);
-        return order.getPayUrl();
+        return cashierUrl(gateway, order, credential.getMd5Key());
+    }
+
+    private String cashierUrl(String gateway, EasyPayOrder order, String md5Key) {
+        String url = gateway + "/easypay/v1/pay/" + order.getId();
+        if ("wxpay".equals(order.getType())) {
+            // Fragment 不会进入 HTTP Referer 或 Nginx 查询日志。
+            url += "#token=" + EasyPayUtil.cashierToken(order.getId(), order.getPid(), order.getOutTradeNo(), md5Key);
+        }
+        return url;
+    }
+
+    /// 经过单据访问凭证校验的收银台信息与轮询响应。
+    public EasyPaySubmitInfoResult cashierInfo(Long id, String token) {
+        return cashierResult(requireCashierOrder(id, token));
+    }
+
+    /// 金额、商户、应用与支付方式仅从已验签的协议订单装载。
+    public EasyPaySubmitInfoResult cashierPay(Long id, String token) {
+        requireCashierOrder(id, token);
+        return lockExecutor.execute(TradeLockKeys.gatewayPay("epay-v1-" + id),
+                TradeLockKeys.LONG_EXPIRE, TradeLockKeys.LONG_WAIT,
+                () -> {
+                    var order = requireCashierOrder(id, token);
+                    if (!"wxpay".equals(order.getType())) {
+                        throw new ValidationFailedException("error.plugin.easypay.unsupportedType");
+                    }
+                    if (Objects.equals(order.getStatus(), 1) || StrUtil.isNotBlank(order.getPayBody())) {
+                        return cashierResult(order);
+                    }
+                    merchantContextLoader.initMch(order.getMchNo());
+                    NormalPayParam payParam = new NormalPayParam();
+                    payParam.setMchNo(order.getMchNo());
+                    payParam.setAppId(order.getAppId());
+                    payParam.setBizOrderNo(order.getOutTradeNo());
+                    payParam.setTitle(order.getName());
+                    payParam.setAmount(order.getMoney());
+                    payParam.setMethod(easyPayAssistService.resolvePayMethod(order.getType(), "web", "pc", null));
+                    payParam.setClientIp(order.getClientIp());
+                    payParam.setSource(easyPayAssistService.sourceCode());
+                    var execution = normalPayService.payInternal(payParam);
+                    var result = execution.getResult();
+                    order.setOrderId(execution.getContainerId())
+                            .setTradeNo(result.getOrderNo())
+                            .setPayBody(result.getPayBody())
+                            .setPayUrl(result.getPayBody())
+                            .setPcCallType(result.getPayBodyType());
+                    easyPayOrderManager.updateById(order);
+                    return cashierResult(order);
+                }, () -> new ValidationFailedException("pay.error.pay.processing"));
+    }
+
+    private EasyPayOrder requireCashierOrder(Long id, String token) {
+        var order = easyPayOrderManager.findByIdNotTenant(id)
+                .orElseThrow(() -> new DataNotExistException("error.plugin.easypay.orderNotFound"));
+        if (!Objects.equals(order.getApiVersion(), EasyPayApiVersionEnum.V1.getCode())) {
+            throw new ValidationFailedException("error.plugin.easypay.signInvalid");
+        }
+        var credential = easyPayCredentialService.getAndCheck(order.getPid());
+        if (!Boolean.TRUE.equals(credential.getEnableV1())
+                || !EasyPayUtil.verifyCashierToken(order.getId(), order.getPid(), order.getOutTradeNo(), credential.getMd5Key(), token)) {
+            throw new ValidationFailedException("error.plugin.easypay.signInvalid");
+        }
+        return order;
+    }
+
+    private EasyPaySubmitInfoResult cashierResult(EasyPayOrder order) {
+        return new EasyPaySubmitInfoResult()
+                .setId(order.getId())
+                .setType(order.getType())
+                .setName(order.getName())
+                .setMoney(EasyPayUtil.fenToYuan(order.getMoney()))
+                .setStatus(order.getStatus())
+                .setPayBody(order.getPayBody())
+                .setPcCallType(order.getPcCallType())
+                .setReturnUrl(Objects.equals(order.getStatus(), 1) ? order.getReturnUrl() : null);
     }
 
     /// 统一下单（mapi.php）
@@ -63,7 +151,7 @@ public class EasyPayPayV1Service {
         EasyPayCreateV1Result result = new EasyPayCreateV1Result();
         try {
             EasyPayOrder order;
-            var optional = easyPayOrderManager.findByOutTradeNo(param.getOutTradeNo());
+            var optional = easyPayOrderManager.findByAppIdAndOutTradeNo(credential.getAppId(), param.getOutTradeNo());
             if (optional.isPresent()) {
                 order = optional.get();
                 if (StrUtil.isNotBlank(order.getPayBody()) || StrUtil.isNotBlank(order.getPayUrl())) {

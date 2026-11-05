@@ -85,6 +85,11 @@ public class WechatAuthStrategy implements ChannelAuthStrategy {
                     "error.payment.wx.appNotConfigured", "auth");
         }
         AppScopeEnum scope = AppScopeEnum.findByCode(appScope);
-        return wxAppFacade.getById(scope, appRefId);
+        WxAppView app = wxAppFacade.getById(scope, appRefId);
+        if (StrUtil.isBlank(app.appSecret())) {
+            throw new BizInfoException(CommonErrorCode.VALIDATE_PARAMETERS_ERROR,
+                    "error.channel.wechat.appSecretRequired");
+        }
+        return app;
     }
 }

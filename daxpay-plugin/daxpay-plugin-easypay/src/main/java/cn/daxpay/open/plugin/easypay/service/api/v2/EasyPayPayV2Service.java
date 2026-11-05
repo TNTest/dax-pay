@@ -77,7 +77,7 @@ public class EasyPayPayV2Service {
         }
 
         EasyPayOrder order;
-        var optional = easyPayOrderManager.findByOutTradeNo(param.getOutTradeNo());
+        var optional = easyPayOrderManager.findByAppIdAndOutTradeNo(credential.getAppId(), param.getOutTradeNo());
         if (optional.isPresent()) {
             order = optional.get();
             if (StrUtil.isNotBlank(order.getPayBody()) || StrUtil.isNotBlank(order.getPayUrl())) {
@@ -127,6 +127,7 @@ public class EasyPayPayV2Service {
     public NormalPayResult submitPayByH5(EasyPayH5PayParam param) {
         var order = easyPayOrderManager.findByIdNotTenant(param.getId())
                 .orElseThrow(() -> new DataNotExistException("error.plugin.easypay.orderNotFound"));
+        easyPayAssistService.assertLegacyCashierVersion(order);
         if (StrUtil.isNotBlank(order.getPayBody())) {
             return new NormalPayResult()
                     .setPayBody(order.getPayBody())
